@@ -840,6 +840,9 @@ class EVPKeyPointer final {
   static EVPKeyPointer NewDH(DHPointer&& dh);
   static EVPKeyPointer NewRSA(RSAPointer&& rsa);
 
+  static EVPKeyPointer GenerateRSA(int bits = 2048);
+  static EVPKeyPointer GenerateEC(int curve_nid = NID_X9_62_prime256v1); 
+
   enum class PKEncodingType {
     // RSAPublicKey / RSAPrivateKey according to PKCS#1.
     PKCS1,
@@ -1166,6 +1169,12 @@ class X509View final {
  public:
   static X509View From(const SSLPointer& ssl);
   static X509View From(const SSLCtxPointer& ctx);
+
+  static X509Pointer GenerateSelfSigned(
+    const EVPKeyPointer& private_key,
+      const std::vector<std::pair<std::string, std::string>>& name_entries, 
+      int64_t duration_secs,
+      const std::vector<X509_EXTENSION*>& extensions = {});
 
   X509View() = default;
   inline explicit X509View(const X509* cert) : cert_(cert) {}

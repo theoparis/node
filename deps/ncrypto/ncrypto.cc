@@ -1314,6 +1314,69 @@ Result<X509Pointer, int> X509Pointer::Parse(
   return Result<X509Pointer, int>(ERR_get_error());
 }
 
+X509Pointer X509View::GenerateSelfSigned(
+  const EVPKeyPointer& private_key,
+  const std::vector<std::pair<std::string, std::string>>& name_entries,
+  int64_t duration_secs,
+  const std::vector<X509_EXTENSION*>& extensions) {
+  X509Pointer cert(X509_new());
+  if (!cert) return X509Pointer();
+
+  if (!X509_set_version(cert, 2)) return X509Pointer();
+
+  unsigned char serial_bytes[20];
+  if (!CSPRNG(serial_bytes, sizeof(serial_bytes))) return X509Pointer();
+  BIGNUM* serial_bn = BN_bin2bn(serial_bytes, sizeof(serial_bytes), nullptr);
+  if (!serial_bn) return X509Pointer();
+  ASN1_INTEGER* serial = BN_to_ASN1_INTEGER(serial_bn, nullptr);
+  BN_free(serial_bn);
+  if (!serial) return X509Pointer();
+  if (!X509_set_serialNumber(cert, serial)) {
+    ASN1_INTEGER_free(serial);
+    return X509Pointer();
+  }
+  ASN1_INTEGER_free(serial);
+
+  X509_gmtime_adj(X509_getm_notBefore(cert), 0);
+  X509_gmtime_adj(X509_getm_notAfter(cert), duration_secs);
+
+  X509_NAME* name = X509_NAME_new();
+  if (!name) return X509Pointer();
+
+  for (const auto& entry : name_entries) {
+    if (!X509_NAME_add_entry_by_txt(
+      name,
+      entry.first.c_str(),
+      MBSTRING_ASC,
+      reinterpret_cast<const unsigned char*>(entry.second.c_str()),
+      -1, -1, 0)) {
+      X509_NAME_free(name);
+      return X509Pointer();
+    }
+  }
+
+  if (!X509_set_subject_name(cert, name)) {
+    X509_NAME_free(name);
+    return X509Pointer();
+  }
+
+  if (!X509_set_issuer_name(cert, name)) {
+      X509_NAME_free(name);
+      return X509Pointer();
+  }
+  X509_NAME_free(name);
+
+  if (!X509_set_pubkey(cert, private_key.get())) return X509Pointer();
+
+  for (auto ext : extensions) {
+    if (!X509_add_ext(cert, ext, -1)) return X509Pointer();
+  }
+
+  if (!X509_sign(cert, private_key.get(), EVP_sha256())) return X509Pointer();
+
+  return cert;
+}
+
 bool X509View::enumUsages(UsageCallback callback) const {
   if (cert_ == nullptr) return false;
   StackOfASN1 eku(static_cast<STACK_OF(ASN1_OBJECT)*>(
@@ -2094,6 +2157,35 @@ EVPKeyPointer EVPKeyPointer::NewRSA(RSAPointer&& rsa) {
     rsa.release();
   }
   return key;
+}
+
+EVPKeyPointer EVPKeyPointer::GenerateRSA(int bits) {
+  EVPKeyCtxPointer ctx = EVPKeyCtxPointer::NewFromID(EVP_PKEY_RSA);
+  if (!ctx) return EVPKeyPointer();
+  if (!ctx.setRsaKeygenBits(bits)) return EVPKeyPointer();
+
+  BignumPointer e(BN_new());
+  if (!e.setWord(EVPKeyCtxPointer::kDefaultRsaExponent)) return EVPKeyPointer();
+  if (!ctx.setRsaKeygenPubExp(std::move(e))) return EVPKeyPointer();
+  if (!ctx.initForKeygen()) return EVPKeyPointer();
+
+  return ctx.paramgen();
+}
+
+EVPKeyPointer EVPKeyPointer::GenerateEC(int curve_nid) {
+  EVPKeyCtxPointer ctx = EVPKeyCtxPointer::NewFromID(EVP_PKEY_EC);
+  if (!ctx) return EVPKeyPointer();
+  if (!ctx.initForParamgen()) return EVPKeyPointer();
+  if (!ctx.setEcParameters(curve_nid, POINT_CONVERSION_UNCOMPRESSED))
+    return EVPKeyPointer();
+  EVPKeyPointer params = ctx.paramgen();
+  if (!params) return EVPKeyPointer();
+
+  ctx = EVPKeyCtxPointer::New(params);
+  if (!ctx) return EVPKeyPointer();
+  if (!ctx.initForKeygen()) return EVPKeyPointer();
+
+  return ctx.paramgen();
 }
 
 EVPKeyPointer::EVPKeyPointer(EVP_PKEY* pkey) : pkey_(pkey) {}
